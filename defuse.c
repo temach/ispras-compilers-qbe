@@ -1,7 +1,7 @@
 /*
  * =====================================================================================
  *
- *       Filename:  reaching.cpp
+ *       Filename:  defuse.c
  *
  *    Description:
  *
@@ -26,6 +26,7 @@
 typedef struct {
     char shortname[50];
     char fullname[70];
+    Ins* instruction; // instruction that added this variable
 } Tmps;
 
 typedef struct {
@@ -36,6 +37,8 @@ typedef struct {
     int killlen;
     Tmps in[200];
     int inlen;
+    Tmps use[20];
+    int uselen;
 } Meta;
 
 typedef struct {
@@ -74,12 +77,13 @@ static int searchTmpFullName(char* full_needle, Tmps* haystack, int hay_len) {
     return -1;
 }
 
-static Tmps convertTmp(Blk* blk, Tmp t) {
+static Tmps convertTmp(Blk* blk, Tmp t, Ins* i) {
     Tmps myvar;
     // for gen/kill analysis
     sprintf(myvar.shortname, "%s", t.name);
     // for rd analysis
     sprintf(myvar.fullname, "@%s%%%s", blk->name, t.name);
+    myvar.instruction = i;
     return myvar;
 }
 
@@ -147,7 +151,7 @@ static void genKill(Fn* fn) {
             // its not unique
             continue;
         }
-        meta->gen[meta->genlen++] = convertTmp(blk, fn->tmp[i->to.val]);
+        meta->gen[meta->genlen++] = convertTmp(blk, fn->tmp[i->to.val], i);
         // then we are GEN the variable in this block
     }
 
@@ -167,7 +171,7 @@ static void genKill(Fn* fn) {
                     // not a var (assignement)
                     continue;
                 }
-                Tmps vnew_other = convertTmp(blk_other, fn->tmp[i_other->to.val]);
+                Tmps vnew_other = convertTmp(blk_other, fn->tmp[i_other->to.val], i_other);
                 if (strcmp(vnew.shortname, vnew_other.shortname) != 0) {
                     // the other assignement instruction is for another variable
                     continue;
@@ -177,7 +181,7 @@ static void genKill(Fn* fn) {
                     // already killed THIS var in THIS block
                     continue;
                 }
-                meta->kill[meta->killlen++] = convertTmp(blk_other, fn->tmp[i_other->to.val]);
+                meta->kill[meta->killlen++] = convertTmp(blk_other, fn->tmp[i_other->to.val], i_other);
                 // then we killed that instruction, that assigned to the same variable
             }
         }
@@ -186,25 +190,7 @@ static void genKill(Fn* fn) {
 
 }
 
-static void readfn (Fn *fn) {
-  metamap = (MapItem*) malloc(fn->nblk * sizeof(MapItem));
-  metamaplen = fn->nblk;
-  metas = (Meta*) malloc(fn->nblk * sizeof(Meta));
-  int mm_i = 0;
-  for (Blk* blk = fn->start; blk; blk = blk->link) {
-    // set len of meta to zero
-    metas[mm_i].inlen = 0;
-    metas[mm_i].genlen = 0;
-    metas[mm_i].killlen = 0;
-    // connect meta to block
-    metamap[mm_i].key = blk;
-    metamap[mm_i].value = &metas[mm_i];
-    // for every block
-    mm_i++;
-  }
-
-  genKill(fn);
-
+static void reaching(Fn* fn) {
   bool change = true;
   while (change) {
     change = false;
@@ -214,14 +200,70 @@ static void readfn (Fn *fn) {
         }
     }
   }
+}
+
+static void setup(Fn* fn) {
+  metamap = (MapItem*) malloc(fn->nblk * sizeof(MapItem));
+  metamaplen = fn->nblk;
+  metas = (Meta*) malloc(fn->nblk * sizeof(Meta));
+  int mm_i = 0;
+  for (Blk* blk = fn->start; blk; blk = blk->link) {
+    // set len of meta to zero
+    metas[mm_i].inlen = 0;
+    metas[mm_i].genlen = 0;
+    metas[mm_i].killlen = 0;
+    metas[mm_i].uselen = 0;
+    // connect meta to block
+    metamap[mm_i].key = blk;
+    metamap[mm_i].value = &metas[mm_i];
+    // for every block
+    mm_i++;
+  }
+}
+
+static void readfn (Fn *fn) {
+  // setup for analysis
+  setup(fn);
+  // gen kill analysis
+  genKill(fn);
+  // reaching definitions analysis
+  reaching(fn);
+
+  // need to count uses
+  for (Blk* blk = fn->start; blk; blk = blk->link) {
+    Meta* meta = getMeta(blk);
+    for (Ins* i=blk->ins; i-blk->ins < blk->nins; i++) {
+        for (int argc = 0; argc < 2; argc++) {
+            // struct Alias { ABot, ALoc ...
+            if (Tmp0 <= i->arg[argc].val && i->arg[argc].type <= 1) {
+                // if the arg is a variable
+                Tmp t = fn->tmp[i->arg[argc].val];
+                int index_gen = findTmpWithShortName(t.name, meta->gen, meta->genlen);
+                if (index_gen >= 0 && meta->gen[index_gen].instruction < i) {
+                    // we gen it in the same block as use it, does not count
+                    continue;
+                }
+                int index_use = findTmpWithShortName(t.name, meta->use, meta->uselen);
+                if (index_use >= 0) {
+                    // already have this use
+                    continue;
+                }
+                meta->use[meta->uselen++] = convertTmp(blk, fn->tmp[i->arg[argc].val], i);
+            }
+        }
+    }
+  }
 
   for (Blk* blk = fn->start; blk; blk = blk->link) {
-    printf("@%s", blk->name);
-    printf("\n\trd_in =");
-    // what have we created and overriden, the final list, this is for the meta of the next block
     Meta* meta = getMeta(blk);
-    for (int i=0; i < meta->inlen; i++) {
-        printf(" %s", meta->in[i].fullname);
+    printf("@%s", blk->name);
+    printf("\n\tdef =");
+    for (int i=0; i < meta->genlen; i++) {
+        printf(" %%%s", meta->gen[i].shortname);
+    }
+    printf("\n\tuse =");
+    for (int i=0; i < meta->uselen; i++) {
+        printf(" %%%s", meta->use[i].shortname);
     }
     printf("\n");
   }
