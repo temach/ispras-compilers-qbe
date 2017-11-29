@@ -238,6 +238,7 @@ static void defUse(Fn* fn) {
                 int index_gen = findTmpWithShortName(t.name, meta->gen, meta->genlen);
                 if (index_gen >= 0 && meta->gen[index_gen].instruction < i) {
                     // we gen it in the same block as use it, does not count
+                    // AND we gen it earlier than use it
                     continue;
                 }
                 int index_use = findTmpWithShortName(t.name, meta->use, meta->uselen);
@@ -282,21 +283,13 @@ static bool analyzeBlock(Blk* blk) {
         }
     }
 
-    for (int i = 0; i < meta->uselen; i++) {
-        int index = findTmpWithShortName(meta->use[i].shortname, meta->live_in, meta->live_inlen);
-        if (index < 0) {
-            meta->live_in[meta->live_inlen++] = meta->use[i];
-            change = true;
-        }
-    }
-
     for (int i=0; i < meta->live_outlen; i++) {
         int index = findTmpWithShortName(meta->live_out[i].shortname, meta->gen, meta->genlen);
         if (index >= 0) {
             // if you dont def it in this block
             continue;
         }
-        int index2 = findTmpWithShortName(meta->live_out[i].shortname, meta->live_out, meta->live_outlen);
+        int index2 = findTmpWithShortName(meta->live_out[i].shortname, meta->live_in, meta->live_inlen);
         if (index2 >= 0) {
             // already have this
             continue;
@@ -318,6 +311,13 @@ static void readfn (Fn *fn) {
   // defuse analysis
   defUse(fn);
 
+  // setup initial values for live_in
+  for (Blk* blk = fn->start; blk; blk = blk->link) {
+    Meta* meta = getMeta(blk);
+    for (int i = 0; i < meta->uselen; i++) {
+        meta->live_in[meta->live_inlen++] = meta->use[i];
+    }
+  }
 
   bool change = true;
   while (change) {
