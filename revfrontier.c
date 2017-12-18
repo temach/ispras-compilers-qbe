@@ -1,17 +1,13 @@
 /*
  * =====================================================================================
  *
- *       Filename:  revdom.c
- *
- *    Description:  Reverse dominators
+ *       Filename:  revfrontier.c
  *
  *        Version:  1.0
- *        Created:  11/25/2017 02:09:10 PM
  *       Revision:  none
  *       Compiler:  gcc
  *
  *         Author:  Artem Abramov (aa), tematibr@gmail.com
- *   Organization:  
  *
  * =====================================================================================
  */
@@ -24,15 +20,19 @@
 #include <math.h>
 
 typedef struct {
+    // pointer to single idom
+    Blk* idom;
     // predeccessor (parent) blocks, that point to this block
     Blk* papa[200];
     int papalen;
-    // blocks that dominate this block
+    // blocks that this block dominates
     Blk* d[200];
     int dlen;
+    // processed - used to find dominators
     bool processed;
-    // reversed link
-    Blk* rlink;
+    // domination frontier for this block
+    Blk* front[200];
+    int frontlen;
 } Meta;
 
 typedef struct {
@@ -126,6 +126,8 @@ static void setup(Fn* fn) {
     metas[mm_i].papalen = 0;
     metas[mm_i].dlen = 0;
     metas[mm_i].processed = false;
+    // set pointers to zero
+    metas[mm_i].idom = NULL;
     // connect meta to block
     metamap[mm_i].key = blk;
     metamap[mm_i].value = &metas[mm_i];
@@ -134,13 +136,72 @@ static void setup(Fn* fn) {
   }
 }
 
-static void buildParents(Blk* blk) {
+static void buildParents(Fn* fn) {
+  for (Blk* blk = fn->start; blk; blk = blk->link) {
     for (uint i=0; i < blk->npred; i++) {
         Blk* pred = blk->pred[i];
         Meta* pred_meta = getMeta(pred);
         // add yourself to your childs parents array
         pred_meta->papa[pred_meta->papalen++] = blk;
     }
+  }
+}
+
+static void findDominators(Fn* fn) {
+  // setup every block to dominate itself
+  for (Blk* blk = fn->start; blk; blk = blk->link) {
+    Meta* meta = getMeta(blk);
+    meta->d[meta->dlen++] = blk;
+  }
+
+  bool change = true;
+  while (change) {
+    change = false;
+    for (Blk* blk = fn->start; blk; blk = blk->link) {
+        if( processBlk(blk) ) {
+            change = true;
+        }
+    }
+  }
+
+}
+
+static void immediateDominators(Fn* fn) {
+  // set idom pointers
+  for (Blk* blk = fn->start; blk; blk = blk->link) {
+    Meta* meta = getMeta(blk);
+    if (meta->dlen < 2) {
+        // nobody dominates this blk (only itself)
+        continue;
+    }
+    for (int i=0; i < meta->dlen; i++) {
+        Blk* candidate = meta->d[i];
+        if (candidate == blk) {
+            // you can not be immediate dominator of yourself
+            continue;
+        }
+        bool can_be_idom = true;
+        // check that there is no block dominating in between candidate and blk
+        for (int k=0; k < meta->dlen; k++) {
+            Blk* other_dom = meta->d[k];
+            if (other_dom == blk || other_dom == candidate) {
+                // skip the blk and skip yourself, because these will of course be true
+                continue;
+            }
+            Meta* other_dom_meta = getMeta(other_dom);
+            if (hasBlk(candidate, other_dom_meta->d, other_dom_meta->dlen)) {
+                // candidate dominates another block in the chain, its not immediate dominator
+                can_be_idom = false;
+                break;
+            }
+        }
+        if (can_be_idom) {
+            meta->idom = candidate;
+            // finish the loop, there is only one idom
+            break;
+        }
+    }
+  }
 }
 
 static void reverseLink(Fn* fn) {
@@ -160,32 +221,34 @@ static void reverseLink(Fn* fn) {
   }
 }
 
-
 static void readfn (Fn *fn) {
   // setup for analysis
   setup(fn);
 
   // reverse the graph, so we start with the new START node
   reverseLink(fn);
-  fillpreds(fn);
-
-  // setup every block to dominate itself
-  for (Blk* blk = fn->start; blk; blk = blk->link) {
-    Meta* meta = getMeta(blk);
-    meta->d[meta->dlen++] = blk;
-  }
 
   // build lists of parents (reverse the graph)
-  for (Blk* blk = fn->start; blk; blk = blk->link) {
-    buildParents(blk);
-  }
+  buildParents(fn);
+  // find all the dominators for each node
+  findDominators(fn);
+  // find all idom
+  immediateDominators(fn);
 
-  bool change = true;
-  while (change) {
-    change = false;
-    for (Blk* blk = fn->start; blk; blk = blk->link) {
-        if( processBlk(blk) ) {
-            change = true;
+  for (Blk* blk = fn->start; blk; blk = blk->link) {
+    Meta* meta = getMeta(blk);
+    if (meta->papalen > 0) {
+        for (int i=0; i < meta->papalen; i++) {
+            Blk* parent = meta->papa[i];
+            Blk* r = parent;
+            Meta* rmeta = getMeta(r);
+            while (r != NULL && r != meta->idom) {
+                if (! hasBlk(blk, rmeta->front, rmeta->frontlen)) {
+                    rmeta->front[rmeta->frontlen++] = blk;
+                }
+                r = rmeta->idom;
+                rmeta = getMeta(r);
+            }
         }
     }
   }
@@ -194,13 +257,10 @@ static void readfn (Fn *fn) {
   reverseLink(fn);
 
   for (Blk* blk = fn->start; blk; blk = blk->link) {
-    printf("@%s\t", blk->name);
-    for (Blk* other_blk = fn->start; other_blk; other_blk = other_blk->link) {
-        Meta* other_meta = getMeta(other_blk);
-        if (hasBlk(blk, other_meta->d, other_meta->dlen)) {
-            // if other_blk has this blk as dominator (in the dom array)
-            printf(" @%s", other_blk->name);
-        }
+    printf("@%s:\t", blk->name);
+    Meta* meta = getMeta(blk);
+    for (int i=0; i < meta->frontlen; i++) {
+        printf(" @%s", meta->front[i]->name);
     }
     printf("\n");
   }
