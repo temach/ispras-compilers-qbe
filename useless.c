@@ -418,7 +418,13 @@ static void mark(Fn* fn) {
             }
             meta->crit_phi[meta->crit_phi_len++] = i.phi_info;
             // decide to loop once or twice, depends if instruction is one arg or two arg
-            int argc = (i.phi_info->arg[1].type > 0 || i.phi_info->arg[1].val >= Tmp0) ? 2 : 1;
+            int argc = 1;
+            if (i.phi_info->arg[1].type > 0 || i.phi_info->arg[1].val >= Tmp0) {
+                argc = 2;
+            }
+            if (i.phi_info->arg[2].type > 0 || i.phi_info->arg[2].val >= Tmp0) {
+                argc = 3;
+            }
             for (int index=0; index < argc; index++) {
                 if (i.phi_info->arg[index].val < Tmp0) {
                     // if the critical operation uses a constant
@@ -473,7 +479,18 @@ static void sweep(Fn* fn) {
             }
         }
         if (! meta->jmp_is_critical) {
-
+            blk->jmp.type = Jjmp;
+            blk->jmp.arg = R;
+            // find nearest marked postdominator
+            Blk* probe = meta->rev_idom;
+            BlkMeta* probe_meta = getBlkMeta(probe);
+            while (! probe_meta->jmp_is_critical) {
+                probe = probe_meta->rev_idom;
+                probe_meta = getBlkMeta(probe);
+            }
+            // rewrite to go to that postdominator
+            blk->s1 = probe;
+            blk->s2 = NULL;
         }
     }
 }
