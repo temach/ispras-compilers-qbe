@@ -181,6 +181,7 @@ static void findDominatorsRev(Fn* fn) {
     }
   }
 
+
 }
 
 static void immediateDominatorsRev(Fn* fn) {
@@ -249,6 +250,38 @@ static void blockAnalyse(Fn* fn) {
   buildParentsRev(fn);
   // find all the dominators for each node
   findDominatorsRev(fn);
+
+  // reverse the graph, so we start with the new START node
+  reverseLink(fn);
+
+  Blk* blk = fn->start->link->link->link;
+  BlkMeta* startmeta = getBlkMeta(fn->start);
+  startmeta->rev_d[startmeta->rev_dlen++] = blk;
+  BlkMeta* loopmeta = getBlkMeta(fn->start->link);
+  loopmeta->rev_d[loopmeta->rev_dlen++] = blk;
+  BlkMeta* leftmeta = getBlkMeta(fn->start->link->link);
+  leftmeta->rev_d[leftmeta->rev_dlen++] = blk;
+
+  blk = blk->link;
+  startmeta->rev_d[startmeta->rev_dlen++] = blk;
+  loopmeta->rev_d[loopmeta->rev_dlen++] = blk;
+  leftmeta->rev_d[leftmeta->rev_dlen++] = blk;
+
+  for (Blk* blk = fn->start; blk; blk = blk->link) {
+    printf("@%s\t", blk->name);
+    for (Blk* other_blk = fn->start; other_blk; other_blk = other_blk->link) {
+        BlkMeta* other_meta = getBlkMeta(other_blk);
+        if (hasBlk(blk, other_meta->rev_d, other_meta->rev_dlen)) {
+            // if other_blk has this blk as dominator (in the dom array)
+            printf(" @%s", other_blk->name);
+        }
+    }
+    printf("\n");
+  }
+
+  // reverse the graph, so we start with the new START node
+  reverseLink(fn);
+
   // find all rev_idom
   immediateDominatorsRev(fn);
 
@@ -371,6 +404,9 @@ static void mark(Fn* fn) {
 
     while (worklist_len > 0) {
         WorkItem i = worklist[--worklist_len];
+        if (i.type == NONE) {
+            continue;
+        }
         if (i.type == INS) {
             BlkMeta* meta = getBlkMeta(i.block);
             if (hasIns(i.ins_info, meta->crit_ins, meta->crit_ins_len)) {
