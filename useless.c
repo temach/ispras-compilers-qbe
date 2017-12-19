@@ -23,29 +23,29 @@
 #include <math.h>
 
 typedef struct {
-    // pointer to single idom
-    Blk* idom;
+    // pointer to single rev_idom
+    Blk* rev_idom;
     // predeccessor (parent) blocks, that point to this block
-    Blk* papa[200];
-    int papalen;
+    Blk* rev_papa[30];
+    int rev_papalen;
     // blocks that this block dominates
-    Blk* d[200];
-    int dlen;
-    // processed - used to find dominators
-    bool processed;
+    Blk* rev_d[100];
+    int rev_dlen;
+    // rev_processed - used to find dominators during reverse
+    bool rev_processed;
     // domination frontier for this block
-    Blk* front[200];
+    Blk* front[100];
     int frontlen;
 
     // jmp marks
     bool jmp_is_critical;
 
     // phi marks
-    Phi* crit_phi[50];
+    Phi* crit_phi[100];
     int crit_phi_len;
 
     // ins marks
-    Ins* crit_ins[50];
+    Ins* crit_ins[100];
     int crit_ins_len;
 } BlkMeta;
 
@@ -80,20 +80,20 @@ static bool processBlk(Blk* blk) {
     bool change = false;
     BlkMeta* meta = getBlkMeta(blk);
 
-    for (int i = 0; i < meta->papalen; i++) {
-        Blk* parent = meta->papa[i];
+    for (int i = 0; i < meta->rev_papalen; i++) {
+        Blk* parent = meta->rev_papa[i];
         BlkMeta* parentmeta = getBlkMeta(parent);
-        for (int index=0; index < parentmeta->dlen; index++) {
+        for (int index=0; index < parentmeta->rev_dlen; index++) {
             // a candidate for dominating you
-            Blk* parent_dom = parentmeta->d[index];
-            if (hasBlk(parent_dom, meta->d, meta->dlen)) {
+            Blk* parent_dom = parentmeta->rev_d[index];
+            if (hasBlk(parent_dom, meta->rev_d, meta->rev_dlen)) {
                 // you already have this listed as dominating you! (if this is not the first iteration)
                 continue;
             }
             // for each block that dominates your parent, check if other parents have it dominating them
             bool all_parents_have_this_blk = true;
-            for (int k=0; k < meta->papalen; k++) {
-                Blk* other_parent = meta->papa[k];
+            for (int k=0; k < meta->rev_papalen; k++) {
+                Blk* other_parent = meta->rev_papa[k];
                 if (other_parent == parent) {
                     // when your other_parent is the one you checked first, dont check again
                     continue;
@@ -104,11 +104,11 @@ static bool processBlk(Blk* blk) {
                     continue;
                 }
                 BlkMeta* other_parentmeta = getBlkMeta(other_parent);
-                if (! other_parentmeta->processed) {
-                    // if the other block has not been processed, consider it as no restrictions (anything is ok)
+                if (! other_parentmeta->rev_processed) {
+                    // if the other block has not been rev_processed, consider it as no restrictions (anything is ok)
                     continue;
                 }
-                if (! hasBlk(parent_dom, other_parentmeta->d, other_parentmeta->dlen)) {
+                if (! hasBlk(parent_dom, other_parentmeta->rev_d, other_parentmeta->rev_dlen)) {
                     // one of the parents does NOT have it, (so that block can NOT dominate you)
                     all_parents_have_this_blk = false;
                     break;
@@ -118,13 +118,13 @@ static bool processBlk(Blk* blk) {
                 // only if all other parents have this block
                 // and you have not added it already
                 // then add it
-                meta->d[meta->dlen++] = parent_dom;
+                meta->rev_d[meta->rev_dlen++] = parent_dom;
                 change = true;
             }
         }
     }
 
-    meta->processed = true;
+    meta->rev_processed = true;
 
     return change;
 }
@@ -137,11 +137,11 @@ static void setupBlk(Fn* fn) {
   int mm_i = 0;
   for (Blk* blk = fn->start; blk; blk = blk->link) {
     // set default values for meta
-    bmetas[mm_i].papalen = 0;
-    bmetas[mm_i].dlen = 0;
+    bmetas[mm_i].rev_papalen = 0;
+    bmetas[mm_i].rev_dlen = 0;
     bmetas[mm_i].frontlen = 0;
-    bmetas[mm_i].processed = false;
-    bmetas[mm_i].idom = NULL;
+    bmetas[mm_i].rev_processed = false;
+    bmetas[mm_i].rev_idom = NULL;
     bmetas[mm_i].jmp_is_critical = false;
     bmetas[mm_i].crit_ins_len = 0;
     bmetas[mm_i].crit_phi_len = 0;
@@ -153,22 +153,22 @@ static void setupBlk(Fn* fn) {
   }
 }
 
-static void buildParents(Fn* fn) {
+static void buildParentsRev(Fn* fn) {
   for (Blk* blk = fn->start; blk; blk = blk->link) {
     for (uint i=0; i < blk->npred; i++) {
         Blk* pred = blk->pred[i];
         BlkMeta* pred_meta = getBlkMeta(pred);
         // add yourself to your childs parents array
-        pred_meta->papa[pred_meta->papalen++] = blk;
+        pred_meta->rev_papa[pred_meta->rev_papalen++] = blk;
     }
   }
 }
 
-static void findDominators(Fn* fn) {
+static void findDominatorsRev(Fn* fn) {
   // setupBlk every block to dominate itself
   for (Blk* blk = fn->start; blk; blk = blk->link) {
     BlkMeta* meta = getBlkMeta(blk);
-    meta->d[meta->dlen++] = blk;
+    meta->rev_d[meta->rev_dlen++] = blk;
   }
 
   bool change = true;
@@ -183,38 +183,38 @@ static void findDominators(Fn* fn) {
 
 }
 
-static void immediateDominators(Fn* fn) {
-  // set idom pointers
+static void immediateDominatorsRev(Fn* fn) {
+  // set rev_idom pointers
   for (Blk* blk = fn->start; blk; blk = blk->link) {
     BlkMeta* meta = getBlkMeta(blk);
-    if (meta->dlen < 2) {
+    if (meta->rev_dlen < 2) {
         // nobody dominates this blk (only itself)
         continue;
     }
-    for (int i=0; i < meta->dlen; i++) {
-        Blk* candidate = meta->d[i];
+    for (int i=0; i < meta->rev_dlen; i++) {
+        Blk* candidate = meta->rev_d[i];
         if (candidate == blk) {
             // you can not be immediate dominator of yourself
             continue;
         }
         bool can_be_idom = true;
         // check that there is no block dominating in between candidate and blk
-        for (int k=0; k < meta->dlen; k++) {
-            Blk* other_dom = meta->d[k];
+        for (int k=0; k < meta->rev_dlen; k++) {
+            Blk* other_dom = meta->rev_d[k];
             if (other_dom == blk || other_dom == candidate) {
                 // skip the blk and skip yourself, because these will of course be true
                 continue;
             }
             BlkMeta* other_dom_meta = getBlkMeta(other_dom);
-            if (hasBlk(candidate, other_dom_meta->d, other_dom_meta->dlen)) {
+            if (hasBlk(candidate, other_dom_meta->rev_d, other_dom_meta->rev_dlen)) {
                 // candidate dominates another block in the chain, its not immediate dominator
                 can_be_idom = false;
                 break;
             }
         }
         if (can_be_idom) {
-            meta->idom = candidate;
-            // finish the loop, there is only one idom
+            meta->rev_idom = candidate;
+            // finish the loop, there is only one rev_idom
             break;
         }
     }
@@ -246,24 +246,24 @@ static void blockAnalyse(Fn* fn) {
   reverseLink(fn);
 
   // build lists of parents (reverse the graph)
-  buildParents(fn);
+  buildParentsRev(fn);
   // find all the dominators for each node
-  findDominators(fn);
-  // find all idom
-  immediateDominators(fn);
+  findDominatorsRev(fn);
+  // find all rev_idom
+  immediateDominatorsRev(fn);
 
   for (Blk* blk = fn->start; blk; blk = blk->link) {
     BlkMeta* meta = getBlkMeta(blk);
-    if (meta->papalen > 0) {
-        for (int i=0; i < meta->papalen; i++) {
-            Blk* parent = meta->papa[i];
+    if (meta->rev_papalen > 0) {
+        for (int i=0; i < meta->rev_papalen; i++) {
+            Blk* parent = meta->rev_papa[i];
             Blk* r = parent;
             BlkMeta* rmeta = getBlkMeta(r);
-            while (r != NULL && r != meta->idom) {
+            while (r != NULL && r != meta->rev_idom) {
                 if (! hasBlk(blk, rmeta->front, rmeta->frontlen)) {
                     rmeta->front[rmeta->frontlen++] = blk;
                 }
-                r = rmeta->idom;
+                r = rmeta->rev_idom;
                 rmeta = getBlkMeta(r);
             }
         }
@@ -294,33 +294,10 @@ typedef struct {
     Phi* phi_info;
 } WorkItem;
 
-WorkItem worklist[200];
+WorkItem worklist[500];
 int worklist_len = 0;
 
-typedef struct {
-    bool critical;
-    Blk* block;
-} Meta;
-
-typedef struct {
-    Ins* key;
-    Meta* value;
-} MapItem;
-
-Meta* metas;
-MapItem* metamap;
-int metamaplen = 0;
-
-Meta* getMeta(Ins *needle) {
-    for (int i = 0; i < metamaplen; i++) {
-        if (metamap[i].key == needle) {
-            return metamap[i].value;
-        }
-    }
-    return NULL;
-}
-
-static bool hasItem(Ins* needle, Ins** haystack, int hay_len) {
+static bool hasIns(Ins* needle, Ins** haystack, int hay_len) {
     for (int index = 0; index<hay_len; index++) {
         if (haystack[index] == needle) {
             return true;
@@ -329,7 +306,16 @@ static bool hasItem(Ins* needle, Ins** haystack, int hay_len) {
     return false;
 }
 
-static WorkItem definitionIns(Fn* fn, char* ssa_needle) {
+static bool hasPhi(Phi* needle, Phi** haystack, int hay_len) {
+    for (int index = 0; index<hay_len; index++) {
+        if (haystack[index] == needle) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static WorkItem findValueDefinition(Fn* fn, char* ssa_needle) {
     // search through all ins and phi in program
     for (Blk* b=fn->start; b; b = b->link) {
         for (Ins *i = b->ins; i < &b->ins[b->nins]; ++i) {
@@ -352,9 +338,6 @@ static WorkItem definitionIns(Fn* fn, char* ssa_needle) {
     WorkItem wi = { .block = NULL, .type = NONE };
     return wi;
 }
-
-
-
 
 
 static void mark(Fn* fn) {
@@ -390,13 +373,13 @@ static void mark(Fn* fn) {
         WorkItem i = worklist[--worklist_len];
         if (i.type == INS) {
             BlkMeta* meta = getBlkMeta(i.block);
-            if (hasItem(i.ins_info, meta->crit_ins, meta->crit_ins_len)) {
+            if (hasIns(i.ins_info, meta->crit_ins, meta->crit_ins_len)) {
                 // already marked this
                 continue;
             }
             meta->crit_ins[meta->crit_ins_len++] = i.ins_info;
             // decide to loop once or twice, depends if instruction is one arg or two arg
-            int argc = (i.ins_info->arg[1].type > 0 || i.ins_info->arg[1].val >= Tmp0) ? 1 : 2;
+            int argc = (i.ins_info->arg[1].type > 0 || i.ins_info->arg[1].val >= Tmp0) ? 2 : 1;
             for (int index=0; index < argc; index++) {
                 if (i.ins_info->arg[index].val < Tmp0) {
                     // if the critical operation uses a constant
@@ -405,7 +388,7 @@ static void mark(Fn* fn) {
                 // if the critical operation uses a variable
                 char* name_of_used_val = fn->tmp[i.ins_info->arg[index].val].name;
                 // find where that variable is defined
-                WorkItem variable_def = definitionIns(fn, name_of_used_val);
+                WorkItem variable_def = findValueDefinition(fn, name_of_used_val);
                 // that instruction that defined the variable we use now, well its also critical
                 worklist[worklist_len++] = variable_def;
             }
@@ -417,18 +400,37 @@ static void mark(Fn* fn) {
             }
             jmp_meta->jmp_is_critical = true;
             if (i.jmp_info->jmp.type > 0
-                    && (i.ins_info->arg[1].type > 0 || i.ins_info->arg[1].val >= Tmp0)
+                    && (i.jmp_info->jmp.arg.type > 0 || i.jmp_info->jmp.arg.val >= Tmp0)
                )
             {
                 // if the critical jump uses some variable
                 char* name_of_used_val = fn->tmp[i.jmp_info->jmp.arg.val].name;
                 // find where that variable is defined
-                WorkItem variable_def = definitionIns(fn, name_of_used_val);
+                WorkItem variable_def = findValueDefinition(fn, name_of_used_val);
                 // that instruction that defined the variable we use now, well its also critical
                 worklist[worklist_len++] = variable_def;
             }
         } else if (i.type == PHI) {
-            BlkMeta* blk 
+            BlkMeta* meta = getBlkMeta(i.block);
+            if (hasPhi(i.phi_info, meta->crit_phi, meta->crit_phi_len)) {
+                // already marked this
+                continue;
+            }
+            meta->crit_phi[meta->crit_phi_len++] = i.phi_info;
+            // decide to loop once or twice, depends if instruction is one arg or two arg
+            int argc = (i.phi_info->arg[1].type > 0 || i.phi_info->arg[1].val >= Tmp0) ? 2 : 1;
+            for (int index=0; index < argc; index++) {
+                if (i.phi_info->arg[index].val < Tmp0) {
+                    // if the critical operation uses a constant
+                    continue;
+                }
+                // if the critical operation uses a variable
+                char* name_of_used_val = fn->tmp[i.phi_info->arg[index].val].name;
+                // find where that variable is defined
+                WorkItem variable_def = findValueDefinition(fn, name_of_used_val);
+                // that instruction that defined the variable we use now, well its also critical
+                worklist[worklist_len++] = variable_def;
+            }
         }
         // now process reverse frontier graph
         Blk* enclosing_block = i.block;
@@ -436,14 +438,12 @@ static void mark(Fn* fn) {
         for (int i=0; i < bmeta->frontlen; i++) {
             // find instruction that ends frontier blk
             Blk* frontier_blk = bmeta->front[i];
-            printf(" @%s", frontier_blk->name);
             BlkMeta* frontier_meta = getBlkMeta(frontier_blk);
             if (frontier_meta->jmp_is_critical) {
                 // we have already marked as critical
                 continue;
             }
             // and mark that instruction as critical
-            frontier_meta->jmp_is_critical = true;
             WorkItem wi = { .block = frontier_blk, .type = JUMP, .jmp_info = frontier_blk };
             worklist[worklist_len++] = wi;
         }
@@ -454,12 +454,26 @@ static void sweep(Fn* fn) {
     for (Blk *blk = fn->start; blk; blk = blk->link) {
         BlkMeta* meta = getBlkMeta(blk);
         for (Ins *i = blk->ins; i < &blk->ins[blk->nins]; ++i) {
-            if (! hasItem(i, meta->crit_ins, meta->crit_ins_len)) {
+            if (! hasIns(i, meta->crit_ins, meta->crit_ins_len)) {
                 i->op = Onop;
                 i->to = R;
                 i->arg[0] = R;
                 i->arg[1] = R;
             }
+        }
+        Phi* prev_phi = NULL;
+        for (Phi* p = blk->phi; p; (prev_phi=p, p=p->link) ) {
+            if (! hasPhi(p, meta->crit_phi, meta->crit_phi_len)) {
+                // drop the phi instruction from the phi link chain
+                if (prev_phi == NULL) {
+                    blk->phi = p->link;
+                } else {
+                    prev_phi->link = p->link;
+                }
+            }
+        }
+        if (! meta->jmp_is_critical) {
+
         }
     }
 }
