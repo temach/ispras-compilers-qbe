@@ -23,6 +23,23 @@
 #include <string.h>
 #include <math.h>
 
+static void reverseLink(Fn* fn) {
+  // reverse linked list
+  Blk* currNode = fn->start;
+  Blk* nextNode = NULL;
+  Blk* prevNode = NULL;
+  while(currNode != NULL) {
+      if (! currNode->link) {
+          // record the end block
+          fn->start = currNode;
+      }
+      nextNode = currNode->link;
+      currNode->link = prevNode;
+      prevNode = currNode;
+      currNode = nextNode;
+  }
+}
+
 typedef struct {
     // predeccessor (parent) blocks, that point to this block
     Blk* papa[200];
@@ -31,6 +48,7 @@ typedef struct {
     Blk* d[200];
     int dlen;
     bool processed;
+    bool was_maximised;
     // reversed link
     Blk* rlink;
 } Meta;
@@ -62,10 +80,41 @@ static bool hasBlk(Blk* needle, Blk** haystack, int hay_len) {
     return false;
 }
 
-static bool processBlk(Blk* blk) {
+static bool processBlk(Fn* fn, Blk* blk) {
     bool change = false;
     Meta* meta = getMeta(blk);
+    // before we begin, set your dominators to yourself only, erase others
+    if (meta->was_maximised) {
+        meta->dlen = 1;
+        meta->was_maximised = false;
+        meta->processed = false;
+    }
 
+    bool all_parents_are_unprocessed = true;
+    for (int i=0; i < meta->papalen; i++) {
+        Blk* parent = meta->papa[i];
+        Meta* parentmeta = getMeta(parent);
+        if (parentmeta->processed) {
+            all_parents_are_unprocessed = false;
+            break;
+        }
+    }
+
+    if (all_parents_are_unprocessed && meta->papalen > 0) {
+        // then we do not need to find an intersection of sets
+        // just add everything as dominating you
+        for (Blk* bb = fn->start; bb; bb = bb->link) {
+            if (! hasBlk(bb, meta->d, meta->dlen)) {
+                meta->d[meta->dlen++] = bb;
+            }
+        }
+        meta->was_maximised = true;
+        meta->processed = true;
+        change = true;
+        return change;
+    }
+
+    // if at least one parent block is processed, we must find an intersection
     for (int i = 0; i < meta->papalen; i++) {
         Blk* parent = meta->papa[i];
         Meta* parentmeta = getMeta(parent);
@@ -91,7 +140,6 @@ static bool processBlk(Blk* blk) {
                 }
                 Meta* other_parentmeta = getMeta(other_parent);
                 if (! other_parentmeta->processed) {
-                    // if the other block has not been processed, consider it as no restrictions (anything is ok)
                     continue;
                 }
                 if (! hasBlk(parent_dom, other_parentmeta->d, other_parentmeta->dlen)) {
@@ -126,6 +174,7 @@ static void setup(Fn* fn) {
     metas[mm_i].papalen = 0;
     metas[mm_i].dlen = 0;
     metas[mm_i].processed = false;
+    metas[mm_i].was_maximised = false;
     // connect meta to block
     metamap[mm_i].key = blk;
     metamap[mm_i].value = &metas[mm_i];
@@ -143,36 +192,46 @@ static void buildParents(Blk* blk) {
     }
 }
 
-static void reverseLink(Fn* fn) {
-  // reverse linked list
-  Blk* currNode = fn->start;
-  Blk* nextNode = NULL;
-  Blk* prevNode = NULL;
-  while(currNode != NULL) {
-      if (! currNode->link) {
-          // record the end block
-          fn->start = currNode;
-      }
-      nextNode = currNode->link;
-      currNode->link = prevNode;
-      prevNode = currNode;
-      currNode = nextNode;
-  }
-}
 
 
 static void readfn (Fn *fn) {
   // setup for analysis
   setup(fn);
 
+   Meta* startmeta = getMeta(fn->start);
+   Meta* loopmeta = getMeta(fn->start->link);
+   Meta* leftmeta = getMeta(fn->start->link->link);
+
+  // add right to other blocks
+   Blk* blk = fn->start->link->link->link;
+   // startmeta->d[startmeta->dlen++] = blk;
+   // loopmeta->d[loopmeta->dlen++] = blk;
+   // leftmeta->d[leftmeta->dlen++] = blk;
+
+   // add end to other blocks
+   blk = blk->link;
+   // startmeta->d[startmeta->dlen++] = blk;
+   // loopmeta->d[loopmeta->dlen++] = blk;
+   // leftmeta->d[leftmeta->dlen++] = blk;
+
   // reverse the graph, so we start with the new START node
   reverseLink(fn);
-  fillpreds(fn);
 
-  // setup every block to dominate itself
-  for (Blk* blk = fn->start; blk; blk = blk->link) {
+  Meta* start_meta = getMeta(fn->start);
+  start_meta->d[start_meta->dlen++] = fn->start;
+
+  // setup every block to be dominated by everyone
+  // STARTING FROM SECOND BLOCK
+  for (Blk* blk = fn->start->link; blk; blk = blk->link) {
+    // this block first
     Meta* meta = getMeta(blk);
     meta->d[meta->dlen++] = blk;
+    // other blocks later
+    for (Blk* bb = fn->start; bb; bb = bb->link) {
+        if (! hasBlk(bb, meta->d, meta->dlen)) {
+            meta->d[meta->dlen++] = bb;
+        }
+    }
   }
 
   // build lists of parents (reverse the graph)
@@ -184,14 +243,16 @@ static void readfn (Fn *fn) {
   while (change) {
     change = false;
     for (Blk* blk = fn->start; blk; blk = blk->link) {
-        if( processBlk(blk) ) {
+        if( processBlk(fn, blk) ) {
             change = true;
         }
     }
   }
 
+
   // reverse linked list BACK to how it was
   reverseLink(fn);
+
 
   for (Blk* blk = fn->start; blk; blk = blk->link) {
     printf("@%s\t", blk->name);
